@@ -4,27 +4,129 @@ author: "Eden Molina"
 date: "2/17/2021"
 output: html_document
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+# Libraries
+```{r}
+library(tidyverse)
+library(tidymodels)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+# Load the data from GitHub
+```{r}
+historical_tuition <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-03-10/historical_tuition.csv')
+historical_tuition %>% head()
 ```
 
-## Including Plots
+# View the data
+We can see there is some relation between public and private school tuition cost
+```{r}
+tuition_df <- historical_tuition %>% 
+  # filter(tuition_type == '4 Year Constant') %>%
+  pivot_wider(names_from = type,
+              values_from = tuition_cost
+              ) %>%
+  na.omit() %>% 
+  janitor::clean_names()
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+tuition_df %>% 
+  ggplot(aes(public, private))+
+  geom_point()+
+  scale_y_continuous(labels=scales::dollar_format())+
+  scale_x_continuous(labels=scales::dollar_format())+
+  ggtitle("Private vs Public School Tuition")+
+  xlab("Public School Tuition")+
+  ylab("Private School Tuition")+
+  theme_linedraw()+
+  theme(axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size = 20, face = "bold"))+
+  ggsave('/Users/edenmolina/Documents/Medium/Plots/1Bootstrap/Plot1.png',
+         width = 8,
+         height = 6)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# Baseline Model: Linear Model
+Here we fit a linear model
+0 is added so that we only fit for slope. If both groups should pay $0 at the $0 mark.
+We can see that the estimated slope is 2.379 which means that for evey dollar a student at a public institution, a private student is expected to pay 2.379 times more.
+```{r}
+tuition_fit <- lm(private ~ 0 + public,
+               data = tuition_df)
+
+summary(tuition_fit)
+
+tidy(tuition_fit)
+```
+
+# Use resampling to get a batter estimate of the relation
+We will use bootstraping where we randomly draw with replacemant to create new datasets the same size as the original. This will simulate generating a new set of data. This frees us from the assumptions required in the linear model.
+```{r}
+set.seed(123)
+tution_boot <- bootstraps(tuition_df,
+                          times = 1e3,
+                          apparent = TRUE)
+```
+
+## Fit a model to the 1000 resamplings
+We fit a linear model to the models then create a new column with the tidied up results
+```{r}
+tuition_models <- tution_boot %>% 
+  mutate(model = map(splits, ~lm(private ~ 0 + public,
+               data = .) ),
+         coef_inf = map(model, tidy))
+
+tuition_coefs <- tuition_models %>% 
+  unnest(coef_inf)
+```
+
+## View the distribution of extimates
+This will help get an understanding of the relation between public and private tuition costs as well as the variability in the relation
+```{r}
+tuition_coefs %>% 
+  ggplot(aes(estimate))+
+  geom_histogram(alpha = .7)+
+  ggtitle("Distribution of Estimated Slope")+
+  xlab("Estimate")+
+  ylab("Frequency")+
+  theme_linedraw()+
+  theme(axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size = 20, face = "bold"))+
+  ggsave('/Users/edenmolina/Documents/Medium/Plots/1Bootstrap/Plot2.png',
+         width = 8,
+         height = 6)
+  
+```
+
+### Get confidence intervals
+The estimate after resampling is now 2.38 with lower bound 2.31 and upper bound of 2.46. This is similar to before: 2.379.
+The results are very similar to before, this is likely because the relationship between the two is in fact linear.
+```{r}
+int_pctl(tuition_models,
+         coef_inf)
+```
+
+## Vizualize the results of the models
+```{r}
+tuition_aug <- tuition_models %>% 
+  # Sample only 500 bootstraps for viz
+  sample_n(500) %>% 
+  mutate(augmented = map(model, augment)) %>% 
+  unnest(augmented)
+
+# Vizualize the different fits we got from the simulated data
+tuition_aug %>% 
+  ggplot(aes(public, private))+
+  geom_line(aes(y = .fitted, group = id), alpha = .1, color = 'grey')+
+  geom_point()+
+  scale_y_continuous(labels=scales::dollar_format())+
+  scale_x_continuous(labels=scales::dollar_format())+
+  ggtitle("500 of 1000 Slope Estimations from Bootstrap Resampling")+
+  xlab("Public School Tuition")+
+  ylab("Private School Tuition")+
+  theme_linedraw()+
+  theme(axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size = 15, face = "bold"))+
+  ggsave('/Users/edenmolina/Documents/Medium/Plots/1Bootstrap/Plot3.png',
+         width = 8,
+         height = 6)
+```
+
+
